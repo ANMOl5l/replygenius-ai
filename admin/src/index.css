@@ -709,3 +709,28 @@ input:checked + .toggle-slider:before {
     padding: 20px;
   }
 }
+
+/* Scrollbar Customization for Chat logs */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.1);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-light);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-purple);
+}
+
+/* Strikethrough style for regular price in plans */
+s {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  font-weight: normal;
+  margin: 0 4px;
+}
+

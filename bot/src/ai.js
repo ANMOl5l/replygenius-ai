@@ -11,7 +11,8 @@ export async function generateReplies({
   preferences,
   memorySummary,
   userInput,
-  imageBase64 = null
+  imageBase64 = null,
+  targetStyle = null
 }) {
   if (!activeProvider || !activeProvider.apiKey) {
     throw new Error("No active AI provider configured or API key is missing.");
@@ -20,7 +21,19 @@ export async function generateReplies({
   const { provider, apiKey, modelName } = activeProvider;
 
   // Construct core prompt instructions
-  const systemPrompt = `${settings.prompt_system_core}
+  let systemPrompt = '';
+  if (targetStyle) {
+    const styleKey = targetStyle.toLowerCase();
+    const stylePrompt = settings[`prompt_style_${styleKey}`];
+    
+    systemPrompt = `${settings.prompt_system_core}
+You must analyze the incoming conversation context and suggest exactly one reply matching this style:
+${targetStyle}: ${stylePrompt}
+
+Format the output strictly as a JSON object with a single key "${styleKey}" containing the generated text.
+Do not include any extra introductory text, explanation, or markdown code blocks (e.g. \`\`\`json). Just return raw JSON.`;
+  } else {
+    systemPrompt = `${settings.prompt_system_core}
 You must analyze the incoming conversation context and suggest four replies matching these exact styles:
 1. Casual: ${settings.prompt_style_casual}
 2. Funny: ${settings.prompt_style_funny}
@@ -29,6 +42,7 @@ You must analyze the incoming conversation context and suggest four replies matc
 
 Format the output strictly as a JSON object with keys: "casual", "funny", "flirty", "confident".
 Do not include any extra introductory text, explanation, or markdown code blocks (e.g. \`\`\`json). Just return raw JSON.`;
+  }
 
   const userContextPrompt = `User Preferences:
 - Reply Style Preference: ${preferences.reply_style}
@@ -83,6 +97,10 @@ Input to reply to:
   } catch (e) {
     console.error("Failed to parse AI response JSON:", responseText, e);
     // Fallback parser in case AI didn't return perfect JSON
+    if (targetStyle) {
+      const styleKey = targetStyle.toLowerCase();
+      return { [styleKey]: responseText.trim() };
+    }
     return extractFallbackReplies(responseText, userInput);
   }
 }
@@ -330,4 +348,64 @@ function extractFallbackReplies(text, userInput) {
   const confident = extractForType('confident') || "sounds good.";
 
   return { casual, funny, flirty, confident };
+}
+
+/**
+ * Meta-prompt engineering helper to generate optimal prompts from descriptions.
+ */
+export async function generatePromptTemplate({
+  activeProvider,
+  instruction,
+  promptType
+}) {
+  if (!activeProvider || !activeProvider.apiKey) {
+    throw new Error("No active AI provider configured or API key is missing.");
+  }
+
+  const { provider, apiKey, modelName } = activeProvider;
+
+  const promptTypeLabel = {
+    core: "Core System Prompt (defines the general personality and tone of the bot)",
+    casual: "Casual Style parameter (direct instructions on how to text casually)",
+    funny: "Funny Style parameter (direct instructions on how to reply wittily/sarcastically)",
+    flirty: "Flirty Style parameter (direct instructions on how to tease/attract)",
+    confident: "Confident Style parameter (direct instructions on how to reply assuredly)"
+  }[promptType] || "System Prompt Component";
+
+  const systemPrompt = "You are a prompt engineering expert. You output only direct instruction text without any formatting, quotes, explanations or markdown block indicators.";
+  const userContextPrompt = `The user wants to generate or modify the prompt instructions for a Telegram Reply bot.
+Target Component: ${promptTypeLabel}
+User instruction/requirement: "${instruction}"
+
+Generate a highly optimized, concise, and direct prompt instruction in English.
+Do not include any introductory sentences, meta-commentary, or markdown blocks (e.g. \`\`\`).
+Return ONLY the raw prompt text that will be fed to the AI. Do not wrap in quotation marks.`;
+
+  let responseText = '';
+
+  if (provider === 'openai' || provider === 'openrouter' || provider === 'groq') {
+    responseText = await callOpenAICompatible({
+      provider,
+      apiKey,
+      model: modelName,
+      systemPrompt,
+      userContextPrompt
+    });
+  } else if (provider === 'gemini') {
+    responseText = await callGemini({
+      apiKey,
+      model: modelName,
+      systemPrompt,
+      userContextPrompt
+    });
+  } else if (provider === 'claude') {
+    responseText = await callClaude({
+      apiKey,
+      model: modelName,
+      systemPrompt,
+      userContextPrompt
+    });
+  }
+
+  return responseText.trim();
 }

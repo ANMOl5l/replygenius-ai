@@ -22,7 +22,7 @@ export function getSupabaseClient(env) {
 export async function getUser(supabase, telegramId) {
   const { data, error } = await supabase
     .from('users')
-    .select('*')
+    .select('*, plans(*)')
     .eq('id', telegramId)
     .single();
   
@@ -141,20 +141,23 @@ export async function checkRateLimit(supabase, telegramId, dailyLimit = 10, rpmL
   const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   const oneMinuteAgo = new Date(now.getTime() - 60 * 1000).toISOString();
 
-  // Get daily count
-  const { count: dailyCount, error: dailyError } = await supabase
-    .from('usage_logs')
-    .select('*', { count: 'exact', head: true })
-    .eq('user_id', telegramId)
-    .gte('timestamp', oneDayAgo);
+  // If dailyLimit is -1, it means unlimited! So we skip the daily check.
+  if (dailyLimit !== -1) {
+    // Get daily count
+    const { count: dailyCount, error: dailyError } = await supabase
+      .from('usage_logs')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', telegramId)
+      .gte('timestamp', oneDayAgo);
 
-  if (dailyError) {
-    console.error("Error checking daily rate limit:", dailyError);
-    return { limited: false, error: dailyError };
-  }
+    if (dailyError) {
+      console.error("Error checking daily rate limit:", dailyError);
+      return { limited: false, error: dailyError };
+    }
 
-  if (dailyCount >= dailyLimit) {
-    return { limited: true, reason: 'daily', limit: dailyLimit, count: dailyCount };
+    if (dailyCount >= dailyLimit) {
+      return { limited: true, reason: 'daily', limit: dailyLimit, count: dailyCount };
+    }
   }
 
   // Get minute count
@@ -206,4 +209,46 @@ export async function getSettings(supabase) {
     settingsObj[item.key] = item.value;
   });
   return settingsObj;
+}
+
+// --- Plans, Chat Logging & Storage ---
+
+export async function getActivePlans(supabase) {
+  const { data, error } = await supabase
+    .from('plans')
+    .select('*')
+    .eq('status', 'active');
+
+  if (error) {
+    console.error("Error fetching active plans:", error);
+    throw error;
+  }
+  return data || [];
+}
+
+export async function logChatMessage(supabase, userId, sender, content, metadata = {}) {
+  const { error } = await supabase
+    .from('messages')
+    .insert([{ user_id: userId, sender, content, metadata }]);
+
+  if (error) {
+    console.error("Error logging chat message:", error);
+  }
+}
+
+export async function uploadScreenshotToStorage(supabase, fileBuffer, fileName) {
+  const { data, error } = await supabase.storage
+    .from('screenshots')
+    .upload(fileName, fileBuffer, {
+      contentType: 'image/jpeg',
+      upsert: true
+    });
+
+  if (error) {
+    console.error("Error uploading screenshot to storage:", error);
+    throw error;
+  }
+
+  const { data: urlData } = supabase.storage.from('screenshots').getPublicUrl(fileName);
+  return urlData.publicUrl;
 }

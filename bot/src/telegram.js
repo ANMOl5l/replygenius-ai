@@ -78,7 +78,10 @@ export async function downloadTelegramPhoto(token, fileId) {
   }
 
   const buffer = await downloadRes.arrayBuffer();
-  return arrayBufferToBase64(buffer);
+  return {
+    arrayBuffer: buffer,
+    base64: arrayBufferToBase64(buffer)
+  };
 }
 
 /**
@@ -100,4 +103,29 @@ export async function setTelegramWebhook(token, webhookUrl) {
     throw new Error(`Failed to set Telegram webhook: ${resJson.description || 'Unknown error'}`);
   }
   return resJson;
+}
+
+/**
+ * Forwards an uploaded photo to a log channel or group using its fileId.
+ */
+export async function forwardPhotoToChannel(token, channelId, fileId, caption = '') {
+  const url = `https://api.telegram.org/bot${token}/sendPhoto`;
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: channelId,
+        photo: fileId,
+        caption: caption,
+        parse_mode: 'HTML'
+      })
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error(`Failed to forward photo to Telegram channel: ${response.status} - ${errText}`);
+    }
+  } catch (e) {
+    console.error("Failed to forward photo to channel:", e);
+  }
 }
