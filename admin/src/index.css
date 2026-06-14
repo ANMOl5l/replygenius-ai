@@ -734,3 +734,19 @@ s {
   margin: 0 4px;
 }
 
+/* Key Pool Management Styles */
+.key-pool-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.key-pool-item {
+  transition: all 0.2s ease;
+}
+
+.key-pool-item:hover {
+  border-color: var(--accent-purple) !important;
+  background: rgba(139, 92, 246, 0.05) !important;
+}
+

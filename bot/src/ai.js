@@ -14,11 +14,12 @@ export async function generateReplies({
   imageBase64 = null,
   targetStyle = null
 }) {
-  if (!activeProvider || !activeProvider.apiKey) {
+  if (!activeProvider || (!activeProvider.apiKey && (!activeProvider.keys || activeProvider.keys.length === 0))) {
     throw new Error("No active AI provider configured or API key is missing.");
   }
 
-  const { provider, apiKey, modelName } = activeProvider;
+  const { provider, keys, modelName } = activeProvider;
+  const keyPool = (keys && keys.length > 0) ? keys : [activeProvider.apiKey];
 
   // Construct core prompt instructions
   let systemPrompt = '';
@@ -58,30 +59,36 @@ Input to reply to:
   let responseText = '';
 
   if (provider === 'openai' || provider === 'openrouter' || provider === 'groq') {
-    responseText = await callOpenAICompatible({
-      provider,
-      apiKey,
-      model: modelName,
-      systemPrompt,
-      userContextPrompt,
-      imageBase64
-    });
+    responseText = await callWithFailover(keyPool, (key) =>
+      callOpenAICompatible({
+        provider,
+        apiKey: key,
+        model: modelName,
+        systemPrompt,
+        userContextPrompt,
+        imageBase64
+      })
+    );
   } else if (provider === 'gemini') {
-    responseText = await callGemini({
-      apiKey,
-      model: modelName,
-      systemPrompt,
-      userContextPrompt,
-      imageBase64
-    });
+    responseText = await callWithFailover(keyPool, (key) =>
+      callGemini({
+        apiKey: key,
+        model: modelName,
+        systemPrompt,
+        userContextPrompt,
+        imageBase64
+      })
+    );
   } else if (provider === 'claude') {
-    responseText = await callClaude({
-      apiKey,
-      model: modelName,
-      systemPrompt,
-      userContextPrompt,
-      imageBase64
-    });
+    responseText = await callWithFailover(keyPool, (key) =>
+      callClaude({
+        apiKey: key,
+        model: modelName,
+        systemPrompt,
+        userContextPrompt,
+        imageBase64
+      })
+    );
   } else {
     throw new Error(`Unsupported provider: ${provider}`);
   }
@@ -103,6 +110,40 @@ Input to reply to:
     }
     return extractFallbackReplies(responseText, userInput);
   }
+}
+
+/**
+ * Helper to call an API function with failover support across a pool of API keys.
+ * Shuffles the keys to distribute load, then tries each key sequentially.
+ * Only retries on retriable errors (e.g., status 429, 500, 401, etc.).
+ */
+async function callWithFailover(keys, apiCallFunction) {
+  if (!keys || keys.length === 0) {
+    throw new Error("No API keys available in the key pool.");
+  }
+
+  // Shuffle keys to distribute load
+  const shuffledKeys = [...keys].sort(() => Math.random() - 0.5);
+  const errors = [];
+
+  for (let i = 0; i < shuffledKeys.length; i++) {
+    const key = shuffledKeys[i];
+    try {
+      return await apiCallFunction(key);
+    } catch (err) {
+      console.warn(`API call failed with key index ${i} (failover candidate):`, err.message || err);
+      errors.push(err);
+      
+      const errorMsg = (err.message || '').toLowerCase();
+      // Fail fast on status 400 Bad Request
+      const isStatus400 = errorMsg.includes("status 400") || err.status === 400;
+      if (isStatus400) {
+        throw err;
+      }
+    }
+  }
+
+  throw new Error(`All API keys in the pool failed. Errors: [${errors.map(e => e.message || e).join(', ')}]`);
 }
 
 /**
@@ -155,7 +196,9 @@ async function callOpenAICompatible({ provider, apiKey, model, systemPrompt, use
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`API Error from ${provider}: ${response.status} - ${errorText}`);
+    const err = new Error(`API Error from ${provider}: ${response.status} - ${errorText}`);
+    err.status = response.status;
+    throw err;
   }
 
   const json = await response.json();
@@ -207,7 +250,9 @@ async function callGemini({ apiKey, model, systemPrompt, userContextPrompt, imag
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`API Error from Gemini: ${response.status} - ${errorText}`);
+    const err = new Error(`API Error from Gemini: ${response.status} - ${errorText}`);
+    err.status = response.status;
+    throw err;
   }
 
   const json = await response.json();
@@ -254,7 +299,9 @@ async function callClaude({ apiKey, model, systemPrompt, userContextPrompt, imag
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`API Error from Claude: ${response.status} - ${errorText}`);
+    const err = new Error(`API Error from Claude: ${response.status} - ${errorText}`);
+    err.status = response.status;
+    throw err;
   }
 
   const json = await response.json();
@@ -271,9 +318,10 @@ export async function summarizeConversation({
   userInput,
   generatedReplies
 }) {
-  if (!activeProvider || !activeProvider.apiKey) return currentSummary;
+  if (!activeProvider || (!activeProvider.apiKey && (!activeProvider.keys || activeProvider.keys.length === 0))) return currentSummary;
 
-  const { provider, apiKey, modelName } = activeProvider;
+  const { provider, keys, modelName } = activeProvider;
+  const keyPool = (keys && keys.length > 0) ? keys : [activeProvider.apiKey];
 
   const summarizerPrompt = `You are a helper that maintains a compact memory summary of a user's conversations.
 Your task is to merge the current memory summary with the new interaction and return a updated, single paragraph summary (max 3 sentences).
@@ -292,27 +340,33 @@ Return only the updated summary paragraph. Do not write anything else.`;
     let responseText = '';
 
     if (provider === 'openai' || provider === 'openrouter' || provider === 'groq') {
-      responseText = await callOpenAICompatible({
-        provider,
-        apiKey,
-        model: modelName,
-        systemPrompt: "You are a database summarization bot. Answer in one short paragraph.",
-        userContextPrompt: summarizerPrompt
-      });
+      responseText = await callWithFailover(keyPool, (key) =>
+        callOpenAICompatible({
+          provider,
+          apiKey: key,
+          model: modelName,
+          systemPrompt: "You are a database summarization bot. Answer in one short paragraph.",
+          userContextPrompt: summarizerPrompt
+        })
+      );
     } else if (provider === 'gemini') {
-      responseText = await callGemini({
-        apiKey,
-        model: modelName,
-        systemPrompt: "You are a database summarization bot. Answer in one short paragraph.",
-        userContextPrompt: summarizerPrompt
-      });
+      responseText = await callWithFailover(keyPool, (key) =>
+        callGemini({
+          apiKey: key,
+          model: modelName,
+          systemPrompt: "You are a database summarization bot. Answer in one short paragraph.",
+          userContextPrompt: summarizerPrompt
+        })
+      );
     } else if (provider === 'claude') {
-      responseText = await callClaude({
-        apiKey,
-        model: modelName,
-        systemPrompt: "You are a database summarization bot. Answer in one short paragraph.",
-        userContextPrompt: summarizerPrompt
-      });
+      responseText = await callWithFailover(keyPool, (key) =>
+        callClaude({
+          apiKey: key,
+          model: modelName,
+          systemPrompt: "You are a database summarization bot. Answer in one short paragraph.",
+          userContextPrompt: summarizerPrompt
+        })
+      );
     }
 
     return responseText.trim();
@@ -358,11 +412,12 @@ export async function generatePromptTemplate({
   instruction,
   promptType
 }) {
-  if (!activeProvider || !activeProvider.apiKey) {
+  if (!activeProvider || (!activeProvider.apiKey && (!activeProvider.keys || activeProvider.keys.length === 0))) {
     throw new Error("No active AI provider configured or API key is missing.");
   }
 
-  const { provider, apiKey, modelName } = activeProvider;
+  const { provider, keys, modelName } = activeProvider;
+  const keyPool = (keys && keys.length > 0) ? keys : [activeProvider.apiKey];
 
   const promptTypeLabel = {
     core: "Core System Prompt (defines the general personality and tone of the bot)",
@@ -384,27 +439,33 @@ Return ONLY the raw prompt text that will be fed to the AI. Do not wrap in quota
   let responseText = '';
 
   if (provider === 'openai' || provider === 'openrouter' || provider === 'groq') {
-    responseText = await callOpenAICompatible({
-      provider,
-      apiKey,
-      model: modelName,
-      systemPrompt,
-      userContextPrompt
-    });
+    responseText = await callWithFailover(keyPool, (key) =>
+      callOpenAICompatible({
+        provider,
+        apiKey: key,
+        model: modelName,
+        systemPrompt,
+        userContextPrompt
+      })
+    );
   } else if (provider === 'gemini') {
-    responseText = await callGemini({
-      apiKey,
-      model: modelName,
-      systemPrompt,
-      userContextPrompt
-    });
+    responseText = await callWithFailover(keyPool, (key) =>
+      callGemini({
+        apiKey: key,
+        model: modelName,
+        systemPrompt,
+        userContextPrompt
+      })
+    );
   } else if (provider === 'claude') {
-    responseText = await callClaude({
-      apiKey,
-      model: modelName,
-      systemPrompt,
-      userContextPrompt
-    });
+    responseText = await callWithFailover(keyPool, (key) =>
+      callClaude({
+        apiKey: key,
+        model: modelName,
+        systemPrompt,
+        userContextPrompt
+      })
+    );
   }
 
   return responseText.trim();

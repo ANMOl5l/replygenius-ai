@@ -1,4 +1,4 @@
-import { getSettings, getApiConfigs } from './supabase.js';
+import { getSettings, getApiConfigs, getApiKeys } from './supabase.js';
 
 let cachedData = null;
 let cacheExpiry = 0;
@@ -14,10 +14,11 @@ export async function getCachedConfigs(supabase, decryptText, encryptionKey, ttl
   }
 
   try {
-    // Fetch settings and API configs from Supabase in parallel
-    const [settings, configs] = await Promise.all([
+    // Fetch settings, API configs, and multi API keys from Supabase in parallel
+    const [settings, configs, apiKeys] = await Promise.all([
       getSettings(supabase),
-      getApiConfigs(supabase)
+      getApiConfigs(supabase),
+      getApiKeys(supabase)
     ]);
 
     // Decrypt Telegram Bot Token if set
@@ -30,7 +31,24 @@ export async function getCachedConfigs(supabase, decryptText, encryptionKey, ttl
       }
     }
 
-    // Decrypt all provider API keys and find the active one
+    // Decrypt all provider API keys from the api_keys table
+    const keysByProvider = {};
+    for (const keyObj of apiKeys) {
+      if (!keyObj.api_key) continue;
+      try {
+        const decrypted = await decryptText(keyObj.api_key, encryptionKey);
+        if (decrypted) {
+          if (!keysByProvider[keyObj.provider]) {
+            keysByProvider[keyObj.provider] = [];
+          }
+          keysByProvider[keyObj.provider].push(decrypted);
+        }
+      } catch (e) {
+        console.error(`Failed to decrypt key ID ${keyObj.id} for provider ${keyObj.provider}:`, e);
+      }
+    }
+
+    // Decrypt legacy keys from api_configs table and build configs map
     let activeProvider = null;
     const decryptedConfigs = {};
 
@@ -40,15 +58,22 @@ export async function getCachedConfigs(supabase, decryptText, encryptionKey, ttl
         try {
           decryptedKey = await decryptText(conf.api_key, encryptionKey);
         } catch (e) {
-          console.error(`Failed to decrypt API key for provider ${conf.provider}:`, e);
+          console.error(`Failed to decrypt API key in api_configs for provider ${conf.provider}:`, e);
         }
+      }
+
+      // Merge keys from the api_keys table, fallback to legacy key if empty
+      const providerKeys = keysByProvider[conf.provider] || [];
+      if (providerKeys.length === 0 && decryptedKey) {
+        providerKeys.push(decryptedKey);
       }
 
       decryptedConfigs[conf.provider] = {
         provider: conf.provider,
-        apiKey: decryptedKey,
+        apiKey: decryptedKey, // For legacy backward compatibility
         status: conf.status,
-        modelName: conf.model_name
+        modelName: conf.model_name,
+        keys: providerKeys // Array of decrypted keys for rotation
       };
 
       if (conf.status === 'active') {

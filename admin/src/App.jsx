@@ -51,6 +51,8 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [plans, setPlans] = useState([]);
   const [apiConfigs, setApiConfigs] = useState([]);
+  const [apiKeys, setApiKeys] = useState([]);
+  const [newKeyForm, setNewKeyForm] = useState({}); // { [provider]: { label: '', key: '' } }
   const [settings, setSettings] = useState({});
   const [backups, setBackups] = useState([]);
   
@@ -170,6 +172,11 @@ export default function App() {
         forms[c.provider] = { apiKey: '', modelName: c.model_name || '', status: c.status };
       });
       setProviderForms(forms);
+
+      // Fetch all API keys from the api_keys table
+      const { data: keysData, error: keysErr } = await supabase.from('api_keys').select('*').order('created_at', { ascending: true });
+      if (keysErr) throw keysErr;
+      setApiKeys(keysData || []);
 
       // 5. Fetch settings
       const { data: settingsData, error: settingsErr } = await supabase.from('settings').select('*');
@@ -330,6 +337,81 @@ export default function App() {
       triggerWorkerCacheClear();
     } catch (e) {
       showStatus("Failed to update status: " + e.message, "error");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // --- Add API Key to pool ---
+  const addApiKey = async (e, provider) => {
+    e.preventDefault();
+    const form = newKeyForm[provider] || { label: '', key: '' };
+    if (!form.key.trim()) {
+      showStatus("Please enter an API key.", "error");
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      const encrypted = await encryptText(form.key.trim(), encryptionKey);
+      const insertData = {
+        provider,
+        api_key: encrypted,
+        label: form.label.trim() || `Key - ${new Date().toLocaleDateString()}`,
+        status: 'active'
+      };
+
+      const { error } = await supabase.from('api_keys').insert([insertData]);
+      if (error) throw error;
+
+      showStatus(`API key added to ${provider} pool successfully.`, "success");
+      setNewKeyForm(prev => ({
+        ...prev,
+        [provider]: { label: '', key: '' }
+      }));
+      
+      loadData();
+      triggerWorkerCacheClear();
+    } catch (e) {
+      showStatus("Failed to add API key: " + e.message, "error");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // --- Delete API Key from pool ---
+  const deleteApiKey = async (keyId) => {
+    if (!confirm("Are you sure you want to delete this API key?")) return;
+    setActionLoading(true);
+    try {
+      const { error } = await supabase.from('api_keys').delete().eq('id', keyId);
+      if (error) throw error;
+      showStatus("API key deleted successfully.", "success");
+      loadData();
+      triggerWorkerCacheClear();
+    } catch (e) {
+      showStatus("Failed to delete key: " + e.message, "error");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // --- Toggle API Key Status ---
+  const toggleApiKeyStatus = async (keyId, currentStatus) => {
+    setActionLoading(true);
+    const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
+    try {
+      const { error } = await supabase
+        .from('api_keys')
+        .update({ status: newStatus })
+        .eq('id', keyId);
+
+      if (error) throw error;
+      showStatus(`API key status updated to ${newStatus}.`, "success");
+      loadData();
+      triggerWorkerCacheClear();
+    } catch (e) {
+      showStatus("Failed to update key status: " + e.message, "error");
     } finally {
       setActionLoading(false);
     }
@@ -1333,6 +1415,76 @@ export default function App() {
                   >
                     Save {c.provider.toUpperCase()} Settings
                   </button>
+
+                  <hr style={{ border: 'none', borderTop: '1px solid var(--border-light)', margin: '20px 0' }} />
+                  
+                  {/* API Key Pool Manager */}
+                  <div className="key-pool-section">
+                    <h4 style={{ fontSize: '0.95rem', fontWeight: 700, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <i className="fa-solid fa-key" style={{ color: 'var(--accent-purple)' }}></i>
+                      <span>API Key Pool</span>
+                      <span className="badge" style={{ background: 'rgba(139,92,246,0.1)', color: 'var(--accent-purple)', fontSize: '0.75rem', padding: '2px 8px', borderRadius: '12px' }}>
+                        {(apiKeys.filter(k => k.provider === c.provider) || []).length} keys
+                      </span>
+                    </h4>
+                    
+                    {/* Keys list */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px', maxHeight: '180px', overflowY: 'auto', paddingRight: '4px' }}>
+                      {(apiKeys.filter(k => k.provider === c.provider) || []).map(k => (
+                        <div key={k.id} className="key-pool-item" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-light)', borderRadius: '8px', gap: '10px' }}>
+                          <div style={{ flexGrow: 1, minWidth: 0 }}>
+                            <p style={{ fontSize: '0.82rem', fontWeight: 600, margin: 0, textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{k.label}</p>
+                            <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: 0 }}>ID: {k.id} • Created {new Date(k.created_at).toLocaleDateString()}</p>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                            <span className={`status-pill ${k.status === 'active' ? 'active' : 'banned'}`} style={{ fontSize: '0.7rem', padding: '2px 6px', cursor: 'pointer' }} onClick={() => toggleApiKeyStatus(k.id, k.status)}>
+                              {k.status}
+                            </span>
+                            <button className="btn btn-danger" style={{ padding: '4px', minWidth: '24px', height: '24px', justifyContent: 'center', border: 'none', background: 'transparent' }} onClick={() => deleteApiKey(k.id)} title="Delete Key">
+                              <i className="fa-solid fa-trash-can" style={{ fontSize: '0.75rem', color: '#ef4444' }}></i>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                      {(apiKeys.filter(k => k.provider === c.provider) || []).length === 0 && (
+                        <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', margin: '8px 0' }}>No keys in pool. Fallback legacy key will be used.</p>
+                      )}
+                    </div>
+
+                    {/* Add Key Form */}
+                    <form onSubmit={(e) => addApiKey(e, c.provider)} style={{ display: 'flex', flexDirection: 'column', gap: '10px', background: 'rgba(255,255,255,0.02)', padding: '12px', borderRadius: '8px', border: '1px dashed var(--border-light)' }}>
+                      <p style={{ fontSize: '0.78rem', fontWeight: 600, margin: '0 0 4px 0' }}>Add Key to Pool</p>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <input 
+                          type="text" 
+                          className="form-control" 
+                          style={{ padding: '6px 10px', fontSize: '0.8rem', flexGrow: 1 }}
+                          placeholder="Label (e.g. Primary Key)" 
+                          value={newKeyForm[c.provider]?.label || ''}
+                          onChange={e => setNewKeyForm({
+                            ...newKeyForm,
+                            [c.provider]: { ...(newKeyForm[c.provider] || { label: '', key: '' }), label: e.target.value }
+                          })}
+                        />
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        <input 
+                          type="password" 
+                          className="form-control" 
+                          style={{ padding: '6px 10px', fontSize: '0.8rem', flexGrow: 2 }}
+                          placeholder="API Key" 
+                          value={newKeyForm[c.provider]?.key || ''}
+                          onChange={e => setNewKeyForm({
+                            ...newKeyForm,
+                            [c.provider]: { ...(newKeyForm[c.provider] || { label: '', key: '' }), key: e.target.value }
+                          })}
+                        />
+                        <button type="submit" className="btn btn-primary" style={{ padding: '6px 12px', fontSize: '0.8rem' }} disabled={actionLoading}>
+                          Add
+                        </button>
+                      </div>
+                    </form>
+                  </div>
                 </div>
               );
             })}

@@ -252,3 +252,16 @@ export async function uploadScreenshotToStorage(supabase, fileBuffer, fileName) 
   const { data: urlData } = supabase.storage.from('screenshots').getPublicUrl(fileName);
   return urlData.publicUrl;
 }
+
+export async function getApiKeys(supabase) {
+  const { data, error } = await supabase
+    .from('api_keys')
+    .select('*')
+    .eq('status', 'active');
+
+  if (error) {
+    console.error("Error fetching API keys:", error);
+    throw error;
+  }
+  return data || [];
+}
