@@ -21,6 +21,18 @@ export async function generateReplies({
   const { provider, keys, modelName } = activeProvider;
   const keyPool = (keys && keys.length > 0) ? keys : [activeProvider.apiKey];
 
+  let modelsPool = [];
+  try {
+    if (modelName && modelName.startsWith('[')) {
+      modelsPool = JSON.parse(modelName);
+    }
+  } catch (e) {
+    console.error("Failed to parse models pool JSON:", e);
+  }
+  if (!modelsPool || modelsPool.length === 0) {
+    modelsPool = [modelName || (provider === 'openrouter' ? 'google/gemini-2.5-flash' : '')];
+  }
+
   // Construct core prompt instructions
   let systemPrompt = '';
   if (targetStyle) {
@@ -59,31 +71,31 @@ Input to reply to:
   let responseText = '';
 
   if (provider === 'openai' || provider === 'openrouter' || provider === 'groq') {
-    responseText = await callWithFailover(keyPool, (key) =>
+    responseText = await callWithFailover(keyPool, modelsPool, (key, model) =>
       callOpenAICompatible({
         provider,
         apiKey: key,
-        model: modelName,
+        model: model,
         systemPrompt,
         userContextPrompt,
         imageBase64
       })
     );
   } else if (provider === 'gemini') {
-    responseText = await callWithFailover(keyPool, (key) =>
+    responseText = await callWithFailover(keyPool, modelsPool, (key, model) =>
       callGemini({
         apiKey: key,
-        model: modelName,
+        model: model,
         systemPrompt,
         userContextPrompt,
         imageBase64
       })
     );
   } else if (provider === 'claude') {
-    responseText = await callWithFailover(keyPool, (key) =>
+    responseText = await callWithFailover(keyPool, modelsPool, (key, model) =>
       callClaude({
         apiKey: key,
-        model: modelName,
+        model: model,
         systemPrompt,
         userContextPrompt,
         imageBase64
@@ -113,25 +125,36 @@ Input to reply to:
 }
 
 /**
- * Helper to call an API function with failover support across a pool of API keys.
- * Shuffles the keys to distribute load, then tries each key sequentially.
+ * Helper to call an API function with failover support across a pool of API keys and models.
+ * Shuffles the key-model combinations to distribute load, then tries each pair sequentially.
  * Only retries on retriable errors (e.g., status 429, 500, 401, etc.).
  */
-async function callWithFailover(keys, apiCallFunction) {
+async function callWithFailover(keys, models, apiCallFunction) {
   if (!keys || keys.length === 0) {
     throw new Error("No API keys available in the key pool.");
   }
+  if (!models || models.length === 0) {
+    throw new Error("No models available in the models pool.");
+  }
 
-  // Shuffle keys to distribute load
-  const shuffledKeys = [...keys].sort(() => Math.random() - 0.5);
+  // Create a pool of (key, model) combinations
+  const pool = [];
+  for (const key of keys) {
+    for (const model of models) {
+      pool.push({ key, model });
+    }
+  }
+
+  // Shuffle the pool to distribute load
+  const shuffledPool = [...pool].sort(() => Math.random() - 0.5);
   const errors = [];
 
-  for (let i = 0; i < shuffledKeys.length; i++) {
-    const key = shuffledKeys[i];
+  for (let i = 0; i < shuffledPool.length; i++) {
+    const { key, model } = shuffledPool[i];
     try {
-      return await apiCallFunction(key);
+      return await apiCallFunction(key, model);
     } catch (err) {
-      console.warn(`API call failed with key index ${i} (failover candidate):`, err.message || err);
+      console.warn(`API call failed with key index ${keys.indexOf(key)} and model ${model}:`, err.message || err);
       errors.push(err);
       
       const errorMsg = (err.message || '').toLowerCase();
@@ -143,7 +166,7 @@ async function callWithFailover(keys, apiCallFunction) {
     }
   }
 
-  throw new Error(`All API keys in the pool failed. Errors: [${errors.map(e => e.message || e).join(', ')}]`);
+  throw new Error(`All API keys and models in the pool failed. Errors: [${errors.map(e => e.message || e).join(', ')}]`);
 }
 
 /**
@@ -323,6 +346,18 @@ export async function summarizeConversation({
   const { provider, keys, modelName } = activeProvider;
   const keyPool = (keys && keys.length > 0) ? keys : [activeProvider.apiKey];
 
+  let modelsPool = [];
+  try {
+    if (modelName && modelName.startsWith('[')) {
+      modelsPool = JSON.parse(modelName);
+    }
+  } catch (e) {
+    console.error("Failed to parse models pool JSON:", e);
+  }
+  if (!modelsPool || modelsPool.length === 0) {
+    modelsPool = [modelName || (provider === 'openrouter' ? 'google/gemini-2.5-flash' : '')];
+  }
+
   const summarizerPrompt = `You are a helper that maintains a compact memory summary of a user's conversations.
 Your task is to merge the current memory summary with the new interaction and return a updated, single paragraph summary (max 3 sentences).
 Keep key preferences, language choices, or specific traits (e.g. "likes short flirty responses", "speaks Hinglish").
@@ -340,29 +375,29 @@ Return only the updated summary paragraph. Do not write anything else.`;
     let responseText = '';
 
     if (provider === 'openai' || provider === 'openrouter' || provider === 'groq') {
-      responseText = await callWithFailover(keyPool, (key) =>
+      responseText = await callWithFailover(keyPool, modelsPool, (key, model) =>
         callOpenAICompatible({
           provider,
           apiKey: key,
-          model: modelName,
+          model: model,
           systemPrompt: "You are a database summarization bot. Answer in one short paragraph.",
           userContextPrompt: summarizerPrompt
         })
       );
     } else if (provider === 'gemini') {
-      responseText = await callWithFailover(keyPool, (key) =>
+      responseText = await callWithFailover(keyPool, modelsPool, (key, model) =>
         callGemini({
           apiKey: key,
-          model: modelName,
+          model: model,
           systemPrompt: "You are a database summarization bot. Answer in one short paragraph.",
           userContextPrompt: summarizerPrompt
         })
       );
     } else if (provider === 'claude') {
-      responseText = await callWithFailover(keyPool, (key) =>
+      responseText = await callWithFailover(keyPool, modelsPool, (key, model) =>
         callClaude({
           apiKey: key,
-          model: modelName,
+          model: model,
           systemPrompt: "You are a database summarization bot. Answer in one short paragraph.",
           userContextPrompt: summarizerPrompt
         })
@@ -419,6 +454,18 @@ export async function generatePromptTemplate({
   const { provider, keys, modelName } = activeProvider;
   const keyPool = (keys && keys.length > 0) ? keys : [activeProvider.apiKey];
 
+  let modelsPool = [];
+  try {
+    if (modelName && modelName.startsWith('[')) {
+      modelsPool = JSON.parse(modelName);
+    }
+  } catch (e) {
+    console.error("Failed to parse models pool JSON:", e);
+  }
+  if (!modelsPool || modelsPool.length === 0) {
+    modelsPool = [modelName || (provider === 'openrouter' ? 'google/gemini-2.5-flash' : '')];
+  }
+
   const promptTypeLabel = {
     core: "Core System Prompt (defines the general personality and tone of the bot)",
     casual: "Casual Style parameter (direct instructions on how to text casually)",
@@ -439,29 +486,29 @@ Return ONLY the raw prompt text that will be fed to the AI. Do not wrap in quota
   let responseText = '';
 
   if (provider === 'openai' || provider === 'openrouter' || provider === 'groq') {
-    responseText = await callWithFailover(keyPool, (key) =>
+    responseText = await callWithFailover(keyPool, modelsPool, (key, model) =>
       callOpenAICompatible({
         provider,
         apiKey: key,
-        model: modelName,
+        model: model,
         systemPrompt,
         userContextPrompt
       })
     );
   } else if (provider === 'gemini') {
-    responseText = await callWithFailover(keyPool, (key) =>
+    responseText = await callWithFailover(keyPool, modelsPool, (key, model) =>
       callGemini({
         apiKey: key,
-        model: modelName,
+        model: model,
         systemPrompt,
         userContextPrompt
       })
     );
   } else if (provider === 'claude') {
-    responseText = await callWithFailover(keyPool, (key) =>
+    responseText = await callWithFailover(keyPool, modelsPool, (key, model) =>
       callClaude({
         apiKey: key,
-        model: modelName,
+        model: model,
         systemPrompt,
         userContextPrompt
       })

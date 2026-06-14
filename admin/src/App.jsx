@@ -35,6 +35,32 @@ async function encryptText(text, masterKeyText) {
   }
 }
 
+const DEFAULT_FREE_MODELS = [
+  { id: 'google/gemma-4-31b-it:free', name: 'Google: Gemma 4 31B (free)' },
+  { id: 'google/gemma-4-26b-a4b-it:free', name: 'Google: Gemma 4 26B A4B (free)' },
+  { id: 'meta-llama/llama-3.3-70b-instruct:free', name: 'Meta: Llama 3.3 70B Instruct (free)' },
+  { id: 'meta-llama/llama-3.2-3b-instruct:free', name: 'Meta: Llama 3.2 3B Instruct (free)' },
+  { id: 'qwen/qwen3-coder:free', name: 'Qwen: Qwen3 Coder 480B A35B (free)' },
+  { id: 'qwen/qwen3-next-80b-a3b-instruct:free', name: 'Qwen: Qwen3 Next 80B A3B Instruct (free)' },
+  { id: 'nvidia/nemotron-3-ultra-550b-a55b:free', name: 'NVIDIA: Nemotron 3 Ultra (free)' },
+  { id: 'nvidia/nemotron-3-super-120b-a12b:free', name: 'NVIDIA: Nemotron 3 Super (free)' },
+  { id: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', name: 'NVIDIA: Nemotron 3 Nano Omni (free)' },
+  { id: 'nvidia/nemotron-3-nano-30b-a3b:free', name: 'NVIDIA: Nemotron 3 Nano 30B A3B (free)' },
+  { id: 'nvidia/nemotron-nano-12b-v2-vl:free', name: 'NVIDIA: Nemotron Nano 12B 2 VL (free)' },
+  { id: 'nvidia/nemotron-nano-9b-v2:free', name: 'NVIDIA: Nemotron Nano 9B V2 (free)' },
+  { id: 'nvidia/nemotron-3.5-content-safety:free', name: 'NVIDIA: Nemotron 3.5 Content Safety (free)' },
+  { id: 'liquid/lfm-2.5-1.2b-thinking:free', name: 'LiquidAI: LFM2.5-1.2B-Thinking (free)' },
+  { id: 'liquid/lfm-2.5-1.2b-instruct:free', name: 'LiquidAI: LFM2.5-1.2B-Instruct (free)' },
+  { id: 'poolside/laguna-m.1:free', name: 'Poolside: Laguna M.1 (free)' },
+  { id: 'poolside/laguna-xs.2:free', name: 'Poolside: Laguna XS.2 (free)' },
+  { id: 'nex-agi/nex-n2-pro:free', name: 'Nex AGI: Nex-N2-Pro (free)' },
+  { id: 'nousresearch/hermes-3-llama-3.1-405b:free', name: 'Nous: Hermes 3 405B Instruct (free)' },
+  { id: 'openai/gpt-oss-120b:free', name: 'OpenAI: gpt-oss-120b (free)' },
+  { id: 'openai/gpt-oss-20b:free', name: 'OpenAI: gpt-oss-20b (free)' },
+  { id: 'cognitivecomputations/dolphin-mistral-24b-venice-edition:free', name: 'Venice: Uncensored (free)' },
+  { id: 'openrouter/free', name: 'Free Models Router' }
+];
+
 export default function App() {
   // Connection states
   const [supabaseUrl, setSupabaseUrl] = useState(localStorage.getItem('rg_sb_url') || 'https://ukjufspvbriaudkjjrjs.supabase.co');
@@ -53,6 +79,7 @@ export default function App() {
   const [apiConfigs, setApiConfigs] = useState([]);
   const [apiKeys, setApiKeys] = useState([]);
   const [newKeyForm, setNewKeyForm] = useState({}); // { [provider]: { label: '', key: '' } }
+  const [availableFreeModels, setAvailableFreeModels] = useState(DEFAULT_FREE_MODELS);
   const [settings, setSettings] = useState({});
   const [backups, setBackups] = useState([]);
   
@@ -206,6 +233,22 @@ export default function App() {
       // 6. Fetch Backups list
       const { data: backupsData } = await supabase.from('backups').select('*').order('created_at', { ascending: false });
       setBackups(backupsData || []);
+
+      // Fetch available OpenRouter free models dynamically
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/models');
+        if (res.ok) {
+          const d = await res.json();
+          const freeModels = d.data
+            .filter(m => parseFloat(m.pricing?.prompt || 0) === 0 && parseFloat(m.pricing?.completion || 0) === 0)
+            .map(m => ({ id: m.id, name: m.name }));
+          if (freeModels.length > 0) {
+            setAvailableFreeModels(freeModels);
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to fetch live OpenRouter models, using defaults:", e);
+      }
 
     } catch (err) {
       console.error(err);
@@ -1378,19 +1421,78 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="form-group">
-                    <label>Default Model Name</label>
-                    <input 
-                      type="text" 
-                      className="form-control" 
-                      placeholder="e.g. gpt-4o-mini" 
-                      value={form.modelName}
-                      onChange={e => setProviderForms({
-                        ...providerForms,
-                        [c.provider]: { ...form, modelName: e.target.value }
-                      })}
-                    />
-                  </div>
+                  {c.provider === 'openrouter' ? (
+                    <div className="form-group">
+                      <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span>Active Free Models</span>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)' }}>
+                          {(() => {
+                            try {
+                              const parsed = JSON.parse(form.modelName);
+                              return Array.isArray(parsed) ? parsed.length : 1;
+                            } catch(e) {
+                              return form.modelName ? 1 : 0;
+                            }
+                          })()} active
+                        </span>
+                      </label>
+                      <div className="form-control" style={{ maxHeight: '180px', overflowY: 'auto', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {availableFreeModels.map(m => {
+                          let isChecked = false;
+                          try {
+                            const parsed = JSON.parse(form.modelName);
+                            isChecked = Array.isArray(parsed) ? parsed.includes(m.id) : form.modelName === m.id;
+                          } catch (e) {
+                            isChecked = form.modelName === m.id;
+                          }
+                          return (
+                            <label key={m.id} style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '0.82rem' }}>
+                              <input 
+                                type="checkbox" 
+                                checked={isChecked}
+                                onChange={e => {
+                                  let currentList = [];
+                                  try {
+                                    const parsed = JSON.parse(form.modelName);
+                                    currentList = Array.isArray(parsed) ? parsed : [form.modelName];
+                                  } catch(err) {
+                                    currentList = form.modelName ? [form.modelName] : [];
+                                  }
+                                  if (e.target.checked) {
+                                    if (!currentList.includes(m.id)) {
+                                      currentList.push(m.id);
+                                    }
+                                  } else {
+                                    currentList = currentList.filter(id => id !== m.id);
+                                  }
+                                  setProviderForms({
+                                    ...providerForms,
+                                    [c.provider]: { ...form, modelName: JSON.stringify(currentList) }
+                                  });
+                                }}
+                              />
+                              <span>{m.name}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>The bot will distribute request load across all selected models.</span>
+                    </div>
+                  ) : (
+                    <div className="form-group">
+                      <label>Default Model Name</label>
+                      <input 
+                        type="text" 
+                        className="form-control" 
+                        placeholder="e.g. gpt-4o-mini" 
+                        value={form.modelName}
+                        onChange={e => setProviderForms({
+                          ...providerForms,
+                          [c.provider]: { ...form, modelName: e.target.value }
+                        })}
+                      />
+                    </div>
+                  )}
 
                   <div className="form-group">
                     <label>Set New API Key {c.api_key && <span style={{ color: 'var(--status-active)' }}>(Key Set ✓)</span>}</label>
